@@ -1,10 +1,12 @@
 use lazy_static::lazy_static;
 use std::env::var;
 use std::process::Command;
+use tempdir::TempDir;
 
 lazy_static! {
     static ref CARGO_TARGET_DIR: String =
         var("CARGO_TARGET_DIR").unwrap_or_else(|_| "./target".to_string());
+    static ref TEST_DIR: TempDir = TempDir::new("example").unwrap();
 }
 
 #[cfg(test)]
@@ -13,42 +15,89 @@ fn init() {
     println!("using cargo target dir: {}", *CARGO_TARGET_DIR);
     build_ezkl();
     let status = Command::new(format!("{}/release/ezkl", *CARGO_TARGET_DIR))
-        .args(["-K=23", "gen-srs", "--params-path=kzg.params"])
+        .args([
+            "-K=17",
+            "gen-srs",
+            &format!(
+                "--params-path={}/kzg17.params",
+                TEST_DIR.path().to_str().unwrap()
+            ),
+        ])
+        .status()
+        .expect("failed to execute process");
+    assert!(status.success());
+    let status = Command::new(format!("{}/release/ezkl", *CARGO_TARGET_DIR))
+        .args([
+            "-K=23",
+            "gen-srs",
+            &format!(
+                "--params-path={}/kzg23.params",
+                TEST_DIR.path().to_str().unwrap()
+            ),
+        ])
         .status()
         .expect("failed to execute process");
     assert!(status.success());
 }
 
-const TESTS: [&str; 17] = [
+const TESTS: [&str; 23] = [
     "1l_mlp",
     "1l_flatten",
     "1l_average",
+    "1l_div",
     "1l_pad",
     "1l_reshape",
     "1l_sigmoid",
     "1l_sqrt",
+    "1l_prelu",
     "1l_leakyrelu",
+    "1l_gelu_noappx",
+    // "1l_gelu_tanh_appx",
     "1l_relu",
+    "1l_tanh",
     "2l_relu_sigmoid_small",
     "2l_relu_fc",
     "2l_relu_small",
     "2l_relu_sigmoid",
     "1l_conv",
+    "2l_sigmoid_small",
     "2l_relu_sigmoid_conv",
     "3l_relu_conv_fc",
     "4l_relu_conv_fc",
+    "1l_erf",
 ];
 
-const TESTS_AGGR: [&str; 13] = [
+const PACKING_TESTS: [&str; 14] = [
+    "1l_mlp",
+    "1l_average",
+    "1l_div",
+    "1l_reshape",
+    "1l_sigmoid",
+    "1l_sqrt",
+    "1l_leakyrelu",
+    "1l_prelu",
+    "1l_relu",
+    "1l_tanh",
+    "1l_gelu_noappx",
+    "2l_relu_sigmoid_small",
+    "2l_relu_fc",
+    "2l_relu_small",
+];
+
+const TESTS_AGGR: [&str; 17] = [
     "1l_mlp",
     "1l_flatten",
     "1l_average",
     "1l_reshape",
+    "1l_div",
     "1l_pad",
     "1l_sigmoid",
+    "1l_gelu_noappx",
     "1l_sqrt",
+    "1l_prelu",
     "1l_leakyrelu",
     "1l_relu",
+    "1l_tanh",
     "2l_relu_fc",
     "2l_relu_sigmoid_small",
     "2l_relu_small",
@@ -60,15 +109,19 @@ const NEG_TESTS: [(&str, &str); 2] = [
     ("2l_relu_small", "2l_relu_sigmoid_small"),
 ];
 
-const TESTS_EVM: [&str; 11] = [
+const TESTS_EVM: [&str; 15] = [
     "1l_mlp",
     "1l_flatten",
     "1l_average",
     "1l_reshape",
     "1l_sigmoid",
+    "1l_div",
     "1l_sqrt",
+    "1l_prelu",
     "1l_leakyrelu",
+    "1l_gelu_noappx",
     "1l_relu",
+    "1l_tanh",
     "2l_relu_sigmoid_small",
     "2l_relu_small",
     "2l_relu_fc",
@@ -84,7 +137,7 @@ macro_rules! test_func_aggr {
             use crate::TESTS_AGGR;
             use test_case::test_case;
             use crate::kzg_aggr_prove_and_verify;
-            seq!(N in 0..=12 {
+            seq!(N in 0..=16 {
 
             #(#[test_case(TESTS_AGGR[N])])*
             fn kzg_aggr_prove_and_verify_(test: &str) {
@@ -92,7 +145,33 @@ macro_rules! test_func_aggr {
             }
 
             });
+    }
+    };
+}
 
+macro_rules! test_packed_func {
+    () => {
+        #[cfg(test)]
+        mod packed_tests {
+            use seq_macro::seq;
+            use test_case::test_case;
+            use crate::PACKING_TESTS;
+            use crate::mock_packed_outputs;
+            use crate::mock_everything;
+
+            seq!(N in 0..=13 {
+
+            #(#[test_case(PACKING_TESTS[N])])*
+            fn mock_packed_outputs_(test: &str) {
+                mock_packed_outputs(test.to_string());
+            }
+
+            #(#[test_case(PACKING_TESTS[N])])*
+            fn mock_everything_(test: &str) {
+                mock_everything(test.to_string());
+            }
+
+            });
 
     }
     };
@@ -111,8 +190,15 @@ macro_rules! test_func {
             use crate::forward_pass;
             use crate::kzg_prove_and_verify;
             use crate::render_circuit;
+            use crate::tutorial as run_tutorial;
 
-            seq!(N in 0..=16 {
+            #[test]
+            fn tutorial_() {
+                run_tutorial();
+            }
+
+
+            seq!(N in 0..=22 {
 
             #(#[test_case(TESTS[N])])*
             fn render_circuit_(test: &str) {
@@ -144,9 +230,7 @@ macro_rules! test_func {
                 kzg_prove_and_verify(test.to_string());
             }
 
-
             });
-
 
     }
     };
@@ -164,16 +248,19 @@ macro_rules! test_func_evm {
 
             /// Not all models will pass VerifyEVM because their contract size exceeds the limit, so we only
             /// specify a few that will
-            const TESTS_SOLIDITY: [&str; 6] = [
+            const TESTS_SOLIDITY: [&str; 9] = [
                 "1l_relu",
+                "1l_div",
                 "1l_leakyrelu",
                 "1l_sqrt",
+                "1l_prelu",
+                "1l_gelu_noappx",
                 "1l_sigmoid",
                 "1l_reshape",
                 "2l_relu_fc"
             ];
 
-            seq!(N in 0..=10 {
+            seq!(N in 0..=14 {
 
                 #(#[test_case(TESTS_EVM[N])])*
                 fn kzg_evm_prove_and_verify_(test: &str) {
@@ -222,6 +309,7 @@ macro_rules! test_neg_examples {
             fn neg_examples_(test: (&str, &str)) {
                 run(test.0.to_string(), test.1.to_string());
             }
+
             });
     }
     };
@@ -232,6 +320,7 @@ test_func_aggr!();
 test_func_evm!();
 test_func_examples!();
 test_neg_examples!();
+test_packed_func!();
 
 // Mock prove (fast, but does not cover some potential issues)
 fn neg_mock(example_name: String, counter_example: String) {
@@ -271,7 +360,12 @@ fn forward_pass(example_name: String) {
             "-M",
             format!("./examples/onnx/{}/network.onnx", example_name).as_str(),
             "-O",
-            format!("./examples/onnx/{}/input_forward.json", example_name).as_str(),
+            format!(
+                "{}/{}_input_forward.json",
+                TEST_DIR.path().to_str().unwrap(),
+                example_name
+            )
+            .as_str(),
             // "-K",
             // "2",  //causes failure
         ])
@@ -285,7 +379,12 @@ fn forward_pass(example_name: String) {
             "-K=17",
             "mock",
             "-D",
-            format!("./examples/onnx/{}/input_forward.json", example_name).as_str(),
+            format!(
+                "{}/{}_input_forward.json",
+                TEST_DIR.path().to_str().unwrap(),
+                example_name
+            )
+            .as_str(),
             "-M",
             format!("./examples/onnx/{}/network.onnx", example_name).as_str(),
         ])
@@ -306,7 +405,31 @@ fn render_circuit(example_name: String) {
             "-M",
             format!("./examples/onnx/{}/network.onnx", example_name).as_str(),
             "-O",
-            format!("./examples/onnx/{}/render.png", example_name).as_str(),
+            format!(
+                "{}/{}_render.png",
+                TEST_DIR.path().to_str().unwrap(),
+                example_name
+            )
+            .as_str(),
+        ])
+        .status()
+        .expect("failed to execute process");
+    assert!(status.success());
+}
+
+// Mock prove (fast, but does not cover some potential issues)
+fn tutorial() {
+    let status = Command::new(format!("{}/release/ezkl", *CARGO_TARGET_DIR))
+        .args([
+            "--tolerance=2",
+            "--scale=4",
+            "--bits=16",
+            "-K=17",
+            "mock",
+            "-D",
+            format!("./examples/onnx/tutorial/input.json").as_str(),
+            "-M",
+            format!("./examples/onnx/tutorial/network.onnx").as_str(),
         ])
         .status()
         .expect("failed to execute process");
@@ -331,10 +454,48 @@ fn mock(example_name: String) {
 }
 
 // Mock prove (fast, but does not cover some potential issues)
+fn mock_packed_outputs(example_name: String) {
+    let status = Command::new(format!("{}/release/ezkl", *CARGO_TARGET_DIR))
+        .args([
+            "--bits=16",
+            "-K=17",
+            "--pack-base=2",
+            "mock",
+            "-D",
+            format!("./examples/onnx/{}/input.json", example_name).as_str(),
+            "-M",
+            format!("./examples/onnx/{}/network.onnx", example_name).as_str(),
+        ])
+        .status()
+        .expect("failed to execute process");
+    assert!(status.success());
+}
+
+// Mock prove (fast, but does not cover some potential issues)
+fn mock_everything(example_name: String) {
+    let status = Command::new(format!("{}/release/ezkl", *CARGO_TARGET_DIR))
+        .args([
+            "--bits=16",
+            "-K=17",
+            "--public-inputs",
+            "--pack-base=2",
+            "mock",
+            "-D",
+            format!("./examples/onnx/{}/input.json", example_name).as_str(),
+            "-M",
+            format!("./examples/onnx/{}/network.onnx", example_name).as_str(),
+        ])
+        .status()
+        .expect("failed to execute process");
+    assert!(status.success());
+}
+
+// Mock prove (fast, but does not cover some potential issues)
 fn mock_public_inputs(example_name: String) {
     let status = Command::new(format!("{}/release/ezkl", *CARGO_TARGET_DIR))
         .args([
             "--public-inputs",
+            "--public-outputs=false",
             "--bits=16",
             "-K=17",
             "mock",
@@ -353,6 +514,7 @@ fn mock_public_params(example_name: String) {
     let status = Command::new(format!("{}/release/ezkl", *CARGO_TARGET_DIR))
         .args([
             "--public-params",
+            "--public-outputs=false",
             "--bits=16",
             "-K=17",
             "mock",
@@ -378,10 +540,13 @@ fn kzg_aggr_prove_and_verify(example_name: String) {
             "-M",
             format!("./examples/onnx/{}/network.onnx", example_name).as_str(),
             "--proof-path",
-            format!("kzg_{}.pf", example_name).as_str(),
+            &format!("{}/{}.pf", TEST_DIR.path().to_str().unwrap(), example_name),
             "--vk-path",
-            format!("kzg_{}.vk", example_name).as_str(),
-            "--params-path=kzg.params",
+            &format!("{}/{}.vk", TEST_DIR.path().to_str().unwrap(), example_name),
+            &format!(
+                "--params-path={}/kzg23.params",
+                TEST_DIR.path().to_str().unwrap()
+            ),
             "--transcript=poseidon",
             "--strategy=accum",
         ])
@@ -397,14 +562,25 @@ fn kzg_aggr_prove_and_verify(example_name: String) {
             "-M",
             format!("./examples/onnx/{}/network.onnx", example_name).as_str(),
             "--aggregation-snarks",
-            format!("kzg_{}.pf", example_name).as_str(),
+            &format!("{}/{}.pf", TEST_DIR.path().to_str().unwrap(), example_name),
             "--aggregation-vk-paths",
-            format!("kzg_{}.vk", example_name).as_str(),
+            &format!("{}/{}.vk", TEST_DIR.path().to_str().unwrap(), example_name),
             "--proof-path",
-            format!("kzg_aggr_{}.pf", example_name).as_str(),
+            &format!(
+                "{}/{}_aggr.pf",
+                TEST_DIR.path().to_str().unwrap(),
+                example_name
+            ),
             "--vk-path",
-            format!("kzg_aggr_{}.vk", example_name).as_str(),
-            "--params-path=kzg.params",
+            &format!(
+                "{}/{}_aggr.vk",
+                TEST_DIR.path().to_str().unwrap(),
+                example_name
+            ),
+            &format!(
+                "--params-path={}/kzg23.params",
+                TEST_DIR.path().to_str().unwrap()
+            ),
             "--transcript=blake",
         ])
         .status()
@@ -416,10 +592,21 @@ fn kzg_aggr_prove_and_verify(example_name: String) {
             "-K=17",
             "verify-aggr",
             "--proof-path",
-            format!("kzg_aggr_{}.pf", example_name).as_str(),
+            &format!(
+                "{}/{}_aggr.pf",
+                TEST_DIR.path().to_str().unwrap(),
+                example_name
+            ),
             "--vk-path",
-            format!("kzg_aggr_{}.vk", example_name).as_str(),
-            "--params-path=kzg.params",
+            &format!(
+                "{}/{}_aggr.vk",
+                TEST_DIR.path().to_str().unwrap(),
+                example_name
+            ),
+            &format!(
+                "--params-path={}/kzg23.params",
+                TEST_DIR.path().to_str().unwrap()
+            ),
             "--transcript=blake",
         ])
         .status()
@@ -439,10 +626,21 @@ fn kzg_evm_aggr_prove_and_verify(example_name: String) {
             "-M",
             format!("./examples/onnx/{}/network.onnx", example_name).as_str(),
             "--proof-path",
-            format!("kzg_{}.pf", example_name).as_str(),
+            &format!(
+                "{}/{}_evm.pf",
+                TEST_DIR.path().to_str().unwrap(),
+                example_name
+            ),
             "--vk-path",
-            format!("kzg_{}.vk", example_name).as_str(),
-            "--params-path=kzg.params",
+            &format!(
+                "{}/{}_evm.vk",
+                TEST_DIR.path().to_str().unwrap(),
+                example_name
+            ),
+            &format!(
+                "--params-path={}/kzg23.params",
+                TEST_DIR.path().to_str().unwrap()
+            ),
             "--transcript=poseidon",
             "--strategy=accum",
         ])
@@ -458,14 +656,33 @@ fn kzg_evm_aggr_prove_and_verify(example_name: String) {
             "-M",
             format!("./examples/onnx/{}/network.onnx", example_name).as_str(),
             "--aggregation-snarks",
-            format!("kzg_{}.pf", example_name).as_str(),
+            &format!(
+                "{}/{}_evm.pf",
+                TEST_DIR.path().to_str().unwrap(),
+                example_name
+            ),
             "--aggregation-vk-paths",
-            format!("kzg_{}.vk", example_name).as_str(),
+            &format!(
+                "{}/{}_evm.vk",
+                TEST_DIR.path().to_str().unwrap(),
+                example_name
+            ),
             "--proof-path",
-            format!("kzg_aggr_{}.pf", example_name).as_str(),
+            &format!(
+                "{}/{}_evm_aggr.pf",
+                TEST_DIR.path().to_str().unwrap(),
+                example_name
+            ),
             "--vk-path",
-            format!("kzg_aggr_{}.vk", example_name).as_str(),
-            "--params-path=kzg.params",
+            &format!(
+                "{}/{}_evm_aggr.vk",
+                TEST_DIR.path().to_str().unwrap(),
+                example_name
+            ),
+            &format!(
+                "--params-path={}/kzg23.params",
+                TEST_DIR.path().to_str().unwrap()
+            ),
             "--transcript=evm",
         ])
         .status()
@@ -477,10 +694,21 @@ fn kzg_evm_aggr_prove_and_verify(example_name: String) {
             "-K=17",
             "create-evm-verifier-aggr",
             "--deployment-code-path",
-            format!("kzg_aggr_{}.code", example_name).as_str(),
-            "--params-path=kzg.params",
+            &format!(
+                "{}/{}_evm_aggr.code",
+                TEST_DIR.path().to_str().unwrap(),
+                example_name
+            ),
+            &format!(
+                "--params-path={}/kzg23.params",
+                TEST_DIR.path().to_str().unwrap()
+            ),
             "--vk-path",
-            format!("kzg_aggr_{}.vk", example_name).as_str(),
+            &format!(
+                "{}/{}_evm_aggr.vk",
+                TEST_DIR.path().to_str().unwrap(),
+                example_name
+            ),
         ])
         .status()
         .expect("failed to execute process");
@@ -491,9 +719,17 @@ fn kzg_evm_aggr_prove_and_verify(example_name: String) {
             "-K=17",
             "verify-evm",
             "--proof-path",
-            format!("kzg_aggr_{}.pf", example_name).as_str(),
+            &format!(
+                "{}/{}_evm_aggr.pf",
+                TEST_DIR.path().to_str().unwrap(),
+                example_name
+            ),
             "--deployment-code-path",
-            format!("kzg_aggr_{}.code", example_name).as_str(),
+            &format!(
+                "{}/{}_evm_aggr.code",
+                TEST_DIR.path().to_str().unwrap(),
+                example_name
+            ),
         ])
         .status()
         .expect("failed to execute process");
@@ -512,10 +748,13 @@ fn kzg_prove_and_verify(example_name: String) {
             "-M",
             format!("./examples/onnx/{}/network.onnx", example_name).as_str(),
             "--proof-path",
-            format!("kzg_{}.pf", example_name).as_str(),
+            &format!("{}/{}.pf", TEST_DIR.path().to_str().unwrap(), example_name),
             "--vk-path",
-            format!("kzg_{}.vk", example_name).as_str(),
-            "--params-path=kzg.params",
+            &format!("{}/{}.vk", TEST_DIR.path().to_str().unwrap(), example_name),
+            &format!(
+                "--params-path={}/kzg17.params",
+                TEST_DIR.path().to_str().unwrap()
+            ),
             "--transcript=blake",
             "--strategy=single",
         ])
@@ -530,10 +769,13 @@ fn kzg_prove_and_verify(example_name: String) {
             "-M",
             format!("./examples/onnx/{}/network.onnx", example_name).as_str(),
             "--proof-path",
-            format!("kzg_{}.pf", example_name).as_str(),
+            &format!("{}/{}.pf", TEST_DIR.path().to_str().unwrap(), example_name),
             "--vk-path",
-            format!("kzg_{}.vk", example_name).as_str(),
-            "--params-path=kzg.params",
+            &format!("{}/{}.vk", TEST_DIR.path().to_str().unwrap(), example_name),
+            &format!(
+                "--params-path={}/kzg17.params",
+                TEST_DIR.path().to_str().unwrap()
+            ),
             "--transcript=blake",
         ])
         .status()
@@ -553,10 +795,13 @@ fn kzg_evm_prove_and_verify(example_name: String, with_solidity: bool) {
             "-M",
             format!("./examples/onnx/{}/network.onnx", example_name).as_str(),
             "--proof-path",
-            format!("kzg_{}.pf", example_name).as_str(),
+            &format!("{}/{}.pf", TEST_DIR.path().to_str().unwrap(), example_name),
             "--vk-path",
-            format!("kzg_{}.vk", example_name).as_str(),
-            "--params-path=kzg.params",
+            &format!("{}/{}.vk", TEST_DIR.path().to_str().unwrap(), example_name),
+            &format!(
+                "--params-path={}/kzg17.params",
+                TEST_DIR.path().to_str().unwrap()
+            ),
             "--transcript=evm",
             "--strategy=single",
         ])
@@ -566,8 +811,16 @@ fn kzg_evm_prove_and_verify(example_name: String, with_solidity: bool) {
 
     let input_arg = format!("./examples/onnx/{}/input.json", example_name);
     let network_arg = format!("./examples/onnx/{}/network.onnx", example_name);
-    let code_arg = format!("kzg_{}.code", example_name);
-    let vk_arg = format!("kzg_{}.vk", example_name);
+    let code_arg = format!(
+        "{}/{}.code",
+        TEST_DIR.path().to_str().unwrap(),
+        example_name
+    );
+    let vk_arg = format!("{}/{}.vk", TEST_DIR.path().to_str().unwrap(), example_name);
+    let param_arg = format!(
+        "--params-path={}/kzg17.params",
+        TEST_DIR.path().to_str().unwrap()
+    );
 
     let mut args = vec![
         "--bits=16",
@@ -579,7 +832,7 @@ fn kzg_evm_prove_and_verify(example_name: String, with_solidity: bool) {
         network_arg.as_str(),
         "--deployment-code-path",
         code_arg.as_str(),
-        "--params-path=kzg.params",
+        param_arg.as_str(),
         "--vk-path",
         vk_arg.as_str(),
     ];
@@ -596,7 +849,7 @@ fn kzg_evm_prove_and_verify(example_name: String, with_solidity: bool) {
         .expect("failed to execute process");
     assert!(status.success());
 
-    let pf_arg = format!("kzg_{}.pf", example_name);
+    let pf_arg = format!("{}/{}.pf", TEST_DIR.path().to_str().unwrap(), example_name);
 
     let mut args = vec![
         "--bits=16",

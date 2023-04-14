@@ -1,5 +1,7 @@
 //use crate::onnx::OnnxModel;
 use clap::{Args, Parser, Subcommand, ValueEnum};
+#[cfg(not(target_arch = "wasm32"))]
+use ethereum_types::Address;
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -7,6 +9,8 @@ use std::error::Error;
 use std::fs::File;
 use std::io::{stdin, stdout, Read, Write};
 use std::path::PathBuf;
+
+use crate::circuit::CheckMode;
 
 #[allow(missing_docs)]
 #[derive(ValueEnum, Copy, Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -47,7 +51,7 @@ pub struct RunArgs {
     pub tolerance: usize,
     /// The denominator in the fixed point representation used when quantizing
     #[arg(short = 'S', long, default_value = "7")]
-    pub scale: i32,
+    pub scale: u32,
     /// The number of bits used in lookup tables
     #[arg(short = 'B', long, default_value = "16")]
     pub bits: usize,
@@ -58,14 +62,18 @@ pub struct RunArgs {
     #[arg(long, default_value = "false")]
     pub public_inputs: bool,
     /// Flags whether outputs are public
-    #[arg(long, default_value = "true")]
+    #[arg(long, default_value = "true", action = clap::ArgAction::Set)]
     pub public_outputs: bool,
     /// Flags whether params are public
     #[arg(long, default_value = "false")]
     pub public_params: bool,
-    /// Flags to set maximum rotations
-    #[arg(short = 'M', long, default_value = "512")]
-    pub max_rotations: usize,
+    /// Base used to pack the public-inputs to the circuit. (value > 1) to pack instances as a single int.
+    /// Useful when verifying on the EVM. Note that this will often break for very long inputs. Use with caution, still experimental.
+    #[arg(long, default_value = "1")]
+    pub pack_base: u32,
+    /// run sanity checks during calculations (safe or unsafe)
+    #[arg(long, default_value = "safe")]
+    pub check_mode: CheckMode,
 }
 
 const EZKLCONF: &str = "EZKLCONF";
@@ -208,7 +216,7 @@ pub enum Commands {
         /// The path to the desired output file
         #[arg(long)]
         proof_path: PathBuf,
-        /// The path to load the desired params file
+        /// The transcript type
         #[arg(long)]
         params_path: PathBuf,
         #[arg(
@@ -237,7 +245,7 @@ pub enum Commands {
         /// The path to the desired output file
         #[arg(long)]
         proof_path: PathBuf,
-        /// The path to load the desired params file
+        /// The transcript type
         #[arg(long)]
         params_path: PathBuf,
         #[arg(
@@ -248,6 +256,7 @@ pub enum Commands {
             value_enum
         )]
         transcript: TranscriptType,
+        /// The proving strategy
         #[arg(
             long,
             require_equals = true,
@@ -258,7 +267,7 @@ pub enum Commands {
         strategy: StrategyType,
         // todo, optionally allow supplying proving key
     },
-
+    #[cfg(not(target_arch = "wasm32"))]
     /// Creates an EVM verifier for a single proof
     #[command(name = "create-evm-verifier", arg_required_else_help = true)]
     CreateEVMVerifier {
@@ -283,6 +292,7 @@ pub enum Commands {
         // todo, optionally allow supplying proving key
     },
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Creates an EVM verifier for an aggregate proof
     #[command(name = "create-evm-verifier-aggr", arg_required_else_help = true)]
     CreateEVMVerifierAggr {
@@ -293,9 +303,49 @@ pub enum Commands {
         #[arg(long)]
         vk_path: PathBuf,
         /// The path to output to the desired verification code
-        #[arg(long, required_if_eq("transcript", " "))]
+        #[arg(long)]
         deployment_code_path: Option<PathBuf>,
         // todo, optionally allow supplying proving key
+    },
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Deploys an EVM verifier
+    #[command(name = "deploy-verifier-evm", arg_required_else_help = true)]
+    DeployVerifierEVM {
+        /// The path to the wallet mnemonic if not set will attempt to connect to ledger
+        #[arg(short = 'S', long)]
+        secret: Option<PathBuf>,
+        /// RPC Url
+        #[arg(short = 'U', long)]
+        rpc_url: String,
+        /// The path to the desired EVM bytecode file (optional), either set this or sol_code_path
+        #[arg(long)]
+        deployment_code_path: Option<PathBuf>,
+        /// The path to output the Solidity code (optional) supercedes deployment_code_path in priority
+        #[arg(long)]
+        sol_code_path: Option<PathBuf>,
+        // todo, optionally allow supplying proving key
+    },
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Send a proof to be verified to an already deployed verifier
+    #[command(name = "send-proof-evm", arg_required_else_help = true)]
+    SendProofEVM {
+        /// The path to the wallet mnemonic if not set will attempt to connect to ledger
+        #[arg(short = 'S', long)]
+        secret: Option<PathBuf>,
+        /// RPC Url
+        #[arg(short = 'U', long)]
+        rpc_url: String,
+        /// The deployed verifier address
+        #[arg(long)]
+        addr: Address,
+        /// The path to the proof
+        #[arg(long)]
+        proof_path: PathBuf,
+        /// If we have the contract abi locally (i.e adheres to format in Verifier.json)
+        #[arg(long)]
+        has_abi: bool,
     },
 
     /// Verifies a proof, returning accept or reject
@@ -310,7 +360,7 @@ pub enum Commands {
         /// The path to output the desired verfication key file (optional)
         #[arg(long)]
         vk_path: PathBuf,
-        /// The path to load the desired verfication key file (optional)
+        /// The transcript type
         #[arg(long)]
         params_path: PathBuf,
         #[arg(
@@ -345,6 +395,7 @@ pub enum Commands {
         transcript: TranscriptType,
     },
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Verifies a proof using a local EVM executor, returning accept or reject
     #[command(name = "verify-evm", arg_required_else_help = true)]
     VerifyEVM {
@@ -355,7 +406,7 @@ pub enum Commands {
         #[arg(long)]
         deployment_code_path: PathBuf,
         /// The path to the Solidity code
-        #[arg(long, required_if_eq("transcript", "evm"))]
+        #[arg(long)]
         sol_code_path: Option<PathBuf>,
     },
 
