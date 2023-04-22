@@ -363,7 +363,7 @@ fn forward(
 
 fn mock(data: String, logrows: u32) -> Result<(), Box<dyn Error>> {
     info!("Before prepare data");
-    let data = prepare_d ata(data)?;
+    let data = prepare_data(data)?;
     info!("Before model");
     let model = Model::from_arg()?;
     info!("Before circuit");
