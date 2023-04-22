@@ -11,6 +11,8 @@ pub enum ValType<F: FieldExt + TensorType> {
     AssignedValue(Value<Assigned<F>>),
     /// previously assigned value
     PrevAssigned(AssignedCell<F, F>),
+    /// constant
+    Constant(F),
 }
 
 impl<F: FieldExt + TensorType> From<ValType<F>> for i32 {
@@ -46,7 +48,14 @@ impl<F: FieldExt + TensorType> From<ValType<F>> for i32 {
                 });
                 output
             }
+            ValType::Constant(v) => felt_to_i32(v),
         }
+    }
+}
+
+impl<F: FieldExt + TensorType> From<F> for ValType<F> {
+    fn from(t: F) -> ValType<F> {
+        ValType::Constant(t)
     }
 }
 
@@ -87,6 +96,8 @@ pub enum ValTensor<F: FieldExt + TensorType> {
         inner: Tensor<ValType<F>>,
         /// Vector of dimensions of the tensor.
         dims: Vec<usize>,
+        ///
+        scale: u32,
     },
     /// A tensor backed by an [Instance] column
     Instance {
@@ -94,6 +105,8 @@ pub enum ValTensor<F: FieldExt + TensorType> {
         inner: Column<Instance>,
         /// Vector of dimensions of the tensor.
         dims: Vec<usize>,
+        ///
+        scale: u32,
     },
 }
 
@@ -102,6 +115,17 @@ impl<F: FieldExt + TensorType> From<Tensor<ValType<F>>> for ValTensor<F> {
         ValTensor::Value {
             inner: t.map(|x| x),
             dims: t.dims().to_vec(),
+            scale: 1,
+        }
+    }
+}
+
+impl<F: FieldExt + TensorType> From<Tensor<F>> for ValTensor<F> {
+    fn from(t: Tensor<F>) -> ValTensor<F> {
+        ValTensor::Value {
+            inner: t.map(|x| x.into()),
+            dims: t.dims().to_vec(),
+            scale: 1,
         }
     }
 }
@@ -111,6 +135,7 @@ impl<F: FieldExt + TensorType> From<Tensor<Value<F>>> for ValTensor<F> {
         ValTensor::Value {
             inner: t.map(|x| x.into()),
             dims: t.dims().to_vec(),
+            scale: 1,
         }
     }
 }
@@ -120,6 +145,7 @@ impl<F: FieldExt + TensorType> From<Tensor<Value<Assigned<F>>>> for ValTensor<F>
         ValTensor::Value {
             inner: t.map(|x| x.into()),
             dims: t.dims().to_vec(),
+            scale: 1,
         }
     }
 }
@@ -129,18 +155,37 @@ impl<F: FieldExt + TensorType> From<Tensor<AssignedCell<F, F>>> for ValTensor<F>
         ValTensor::Value {
             inner: t.map(|x| x.into()),
             dims: t.dims().to_vec(),
+            scale: 1,
         }
     }
 }
 
 impl<F: FieldExt + TensorType> ValTensor<F> {
     /// Allocate a new [ValTensor::Instance] from the ConstraintSystem with the given tensor `dims`, optionally enabling `equality`.
-    pub fn new_instance(cs: &mut ConstraintSystem<F>, dims: Vec<usize>, equality: bool) -> Self {
+    pub fn new_instance(cs: &mut ConstraintSystem<F>, dims: Vec<usize>, scale: u32) -> Self {
         let col = cs.instance_column();
-        if equality {
-            cs.enable_equality(col);
+        cs.enable_equality(col);
+        ValTensor::Instance {
+            inner: col,
+            dims,
+            scale,
         }
-        ValTensor::Instance { inner: col, dims }
+    }
+
+    ///
+    pub fn set_scale(&mut self, scale: u32) {
+        match self {
+            ValTensor::Value { scale: s, .. } => *s = scale,
+            ValTensor::Instance { scale: s, .. } => *s = scale,
+        }
+    }
+
+    ///
+    pub fn scale(&self) -> u32 {
+        match self {
+            ValTensor::Value { scale, .. } => *scale,
+            ValTensor::Instance { scale, .. } => *scale,
+        }
     }
 
     /// Calls `int_evals` on the inner tensor.
@@ -148,7 +193,9 @@ impl<F: FieldExt + TensorType> ValTensor<F> {
         // finally convert to vector of integers
         let mut integer_evals: Vec<i128> = vec![];
         match self {
-            ValTensor::Value { inner: v, dims: _ } => {
+            ValTensor::Value {
+                inner: v, dims: _, ..
+            } => {
                 // we have to push to an externally created vector or else vaf.map() returns an evaluation wrapped in Value<> (which we don't want)
                 let _ = v.map(|vaf| match vaf {
                     ValType::Value(v) => v.map(|f| {
@@ -160,6 +207,10 @@ impl<F: FieldExt + TensorType> ValTensor<F> {
                     ValType::PrevAssigned(v) => v.value_field().map(|f| {
                         integer_evals.push(crate::fieldutils::felt_to_i128(f.evaluate()));
                     }),
+                    ValType::Constant(v) => {
+                        integer_evals.push(crate::fieldutils::felt_to_i128(v));
+                        Value::unknown()
+                    }
                 });
             }
             _ => return Err(Box::new(TensorError::WrongMethod)),
@@ -170,11 +221,16 @@ impl<F: FieldExt + TensorType> ValTensor<F> {
     /// Calls `get_slice` on the inner tensor.
     pub fn get_slice(&self, indices: &[Range<usize>]) -> Result<ValTensor<F>, Box<dyn Error>> {
         let slice = match self {
-            ValTensor::Value { inner: v, dims: _ } => {
+            ValTensor::Value {
+                inner: v,
+                dims: _,
+                scale,
+            } => {
                 let slice = v.get_slice(indices)?;
                 ValTensor::Value {
                     inner: slice.clone(),
                     dims: slice.dims().to_vec(),
+                    scale: *scale,
                 }
             }
             _ => return Err(Box::new(TensorError::WrongMethod)),
@@ -185,7 +241,9 @@ impl<F: FieldExt + TensorType> ValTensor<F> {
     /// Transposes the inner tensor
     pub fn transpose_2d(&mut self) -> Result<(), Box<dyn Error>> {
         match self {
-            ValTensor::Value { inner: v, dims: d } => {
+            ValTensor::Value {
+                inner: v, dims: d, ..
+            } => {
                 v.transpose_2d()?;
                 *d = v.dims().to_vec();
             }
@@ -197,6 +255,15 @@ impl<F: FieldExt + TensorType> ValTensor<F> {
     }
 
     /// Fetches the inner tensor as a [Tensor<Value<F>>]
+    pub fn get_inner_tensor(&self) -> Result<Tensor<ValType<F>>, TensorError> {
+        warn!("using 'get_inner' in constraints can create soundness issues.");
+        Ok(match self {
+            ValTensor::Value { inner: v, .. } => v.clone(),
+            ValTensor::Instance { .. } => return Err(TensorError::WrongMethod),
+        })
+    }
+
+    /// Fetches the inner tensor as a [Tensor<Value<F>>]
     pub fn get_inner(&self) -> Result<Tensor<Value<F>>, TensorError> {
         warn!("using 'get_inner' in constraints can create soundness issues.");
         Ok(match self {
@@ -204,6 +271,7 @@ impl<F: FieldExt + TensorType> ValTensor<F> {
                 ValType::Value(v) => v,
                 ValType::AssignedValue(v) => v.evaluate(),
                 ValType::PrevAssigned(v) => v.value_field().evaluate(),
+                ValType::Constant(v) => Value::known(v),
             }),
             ValTensor::Instance { .. } => return Err(TensorError::WrongMethod),
         })
@@ -212,7 +280,9 @@ impl<F: FieldExt + TensorType> ValTensor<F> {
     /// Sets the [ValTensor]'s shape.
     pub fn reshape(&mut self, new_dims: &[usize]) -> Result<(), Box<dyn Error>> {
         match self {
-            ValTensor::Value { inner: v, dims: d } => {
+            ValTensor::Value {
+                inner: v, dims: d, ..
+            } => {
                 v.reshape(new_dims);
                 *d = v.dims().to_vec();
             }
@@ -229,7 +299,9 @@ impl<F: FieldExt + TensorType> ValTensor<F> {
     /// Calls `flatten` on the inner [Tensor].
     pub fn flatten(&mut self) {
         match self {
-            ValTensor::Value { inner: v, dims: d } => {
+            ValTensor::Value {
+                inner: v, dims: d, ..
+            } => {
                 v.flatten();
                 *d = v.dims().to_vec();
             }
@@ -242,7 +314,9 @@ impl<F: FieldExt + TensorType> ValTensor<F> {
     /// Calls `tile` on the inner [Tensor].
     pub fn tile(&mut self, n: usize) -> Result<(), TensorError> {
         match self {
-            ValTensor::Value { inner: v, dims: d } => {
+            ValTensor::Value {
+                inner: v, dims: d, ..
+            } => {
                 *v = v.tile(n)?;
                 *d = v.dims().to_vec();
             }
@@ -260,7 +334,9 @@ impl<F: FieldExt + TensorType> ValTensor<F> {
         initial_offset: usize,
     ) -> Result<(), TensorError> {
         match self {
-            ValTensor::Value { inner: v, dims: d } => {
+            ValTensor::Value {
+                inner: v, dims: d, ..
+            } => {
                 *v = v.duplicate_every_n(n, initial_offset)?;
                 *d = v.dims().to_vec();
             }
@@ -274,7 +350,9 @@ impl<F: FieldExt + TensorType> ValTensor<F> {
     /// Calls `duplicate_every_n` on the inner [Tensor].
     pub fn remove_every_n(&mut self, n: usize, initial_offset: usize) -> Result<(), TensorError> {
         match self {
-            ValTensor::Value { inner: v, dims: d } => {
+            ValTensor::Value {
+                inner: v, dims: d, ..
+            } => {
                 *v = v.remove_every_n(n, initial_offset)?;
                 *d = v.dims().to_vec();
             }
@@ -288,7 +366,9 @@ impl<F: FieldExt + TensorType> ValTensor<F> {
     /// Calls `tile` on the inner [Tensor].
     pub fn pad(&mut self, padding: (usize, usize)) -> Result<(), TensorError> {
         match self {
-            ValTensor::Value { inner: v, dims: d } => {
+            ValTensor::Value {
+                inner: v, dims: d, ..
+            } => {
                 *v = pad(v, padding)?;
                 *d = v.dims().to_vec();
             }
@@ -302,7 +382,9 @@ impl<F: FieldExt + TensorType> ValTensor<F> {
     /// Calls `repeat_rows` on the inner [Tensor].
     pub fn repeat_rows(&mut self, n: usize) -> Result<(), TensorError> {
         match self {
-            ValTensor::Value { inner: v, dims: d } => {
+            ValTensor::Value {
+                inner: v, dims: d, ..
+            } => {
                 *v = v.repeat_rows(n)?;
                 *d = v.dims().to_vec();
             }
@@ -322,10 +404,17 @@ impl<F: FieldExt + TensorType> ValTensor<F> {
         }
     }
 
+    ///
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Calls `pad_row_ones` on the inner [Tensor].
     pub fn pad_row_ones(&mut self) -> Result<(), TensorError> {
         match self {
-            ValTensor::Value { inner: v, dims: d } => {
+            ValTensor::Value {
+                inner: v, dims: d, ..
+            } => {
                 *v = v.pad_row_ones()?;
                 *d = v.dims().to_vec();
             }
@@ -347,7 +436,9 @@ impl<F: FieldExt + TensorType> ValTensor<F> {
         w_stride: usize,
     ) -> Result<(), TensorError> {
         match self {
-            ValTensor::Value { inner: v, dims: d } => {
+            ValTensor::Value {
+                inner: v, dims: d, ..
+            } => {
                 *v = v.multi_ch_doubly_blocked_toeplitz(
                     h_blocks, w_blocks, num_rows, num_cols, h_stride, w_stride,
                 )?;
@@ -392,7 +483,9 @@ impl<F: FieldExt + TensorType> ValTensor<F> {
     /// A [String] representation of the [ValTensor] for display, for example in showing intermediate values in a computational graph.
     pub fn show(&self) -> String {
         match self.clone() {
-            ValTensor::Value { inner: v, dims: _ } => {
+            ValTensor::Value {
+                inner: v, dims: _, ..
+            } => {
                 let r: Tensor<i32> = v.map(|x| x.into());
                 format!("Value {:?}", r)
             }

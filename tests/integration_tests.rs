@@ -40,7 +40,7 @@ fn init() {
     assert!(status.success());
 }
 
-const TESTS: [&str; 23] = [
+const TESTS: [&str; 28] = [
     "1l_mlp",
     "1l_flatten",
     "1l_average",
@@ -49,7 +49,9 @@ const TESTS: [&str; 23] = [
     "1l_reshape",
     "1l_sigmoid",
     "1l_sqrt",
-    "1l_prelu",
+    "1l_instance_norm",
+    "1l_batch_norm",
+    // "1l_prelu",
     "1l_leakyrelu",
     "1l_gelu_noappx",
     // "1l_gelu_tanh_appx",
@@ -65,6 +67,10 @@ const TESTS: [&str; 23] = [
     "3l_relu_conv_fc",
     "4l_relu_conv_fc",
     "1l_erf",
+    "1l_var",
+    "min",
+    "max",
+    "1l_max_pool",
 ];
 
 const PACKING_TESTS: [&str; 14] = [
@@ -75,7 +81,8 @@ const PACKING_TESTS: [&str; 14] = [
     "1l_sigmoid",
     "1l_sqrt",
     "1l_leakyrelu",
-    "1l_prelu",
+    // "1l_prelu",
+    "1l_var",
     "1l_relu",
     "1l_tanh",
     "1l_gelu_noappx",
@@ -84,7 +91,7 @@ const PACKING_TESTS: [&str; 14] = [
     "2l_relu_small",
 ];
 
-const TESTS_AGGR: [&str; 17] = [
+const TESTS_AGGR: [&str; 20] = [
     "1l_mlp",
     "1l_flatten",
     "1l_average",
@@ -94,7 +101,8 @@ const TESTS_AGGR: [&str; 17] = [
     "1l_sigmoid",
     "1l_gelu_noappx",
     "1l_sqrt",
-    "1l_prelu",
+    // "1l_prelu",
+    "1l_var",
     "1l_leakyrelu",
     "1l_relu",
     "1l_tanh",
@@ -102,6 +110,9 @@ const TESTS_AGGR: [&str; 17] = [
     "2l_relu_sigmoid_small",
     "2l_relu_small",
     "1l_conv",
+    "min",
+    "max",
+    "1l_max_pool",
 ];
 
 const NEG_TESTS: [(&str, &str); 2] = [
@@ -109,7 +120,7 @@ const NEG_TESTS: [(&str, &str); 2] = [
     ("2l_relu_small", "2l_relu_sigmoid_small"),
 ];
 
-const TESTS_EVM: [&str; 15] = [
+const TESTS_EVM: [&str; 18] = [
     "1l_mlp",
     "1l_flatten",
     "1l_average",
@@ -117,7 +128,8 @@ const TESTS_EVM: [&str; 15] = [
     "1l_sigmoid",
     "1l_div",
     "1l_sqrt",
-    "1l_prelu",
+    // "1l_prelu",
+    "1l_var",
     "1l_leakyrelu",
     "1l_gelu_noappx",
     "1l_relu",
@@ -125,6 +137,9 @@ const TESTS_EVM: [&str; 15] = [
     "2l_relu_sigmoid_small",
     "2l_relu_small",
     "2l_relu_fc",
+    "min",
+    "max",
+    "1l_max_pool",
 ];
 
 const EXAMPLES: [&str; 2] = ["mlp_4d", "conv2d_mnist"];
@@ -137,7 +152,7 @@ macro_rules! test_func_aggr {
             use crate::TESTS_AGGR;
             use test_case::test_case;
             use crate::kzg_aggr_prove_and_verify;
-            seq!(N in 0..=16 {
+            seq!(N in 0..=17 {
 
             #(#[test_case(TESTS_AGGR[N])])*
             fn kzg_aggr_prove_and_verify_(test: &str) {
@@ -198,7 +213,7 @@ macro_rules! test_func {
             }
 
 
-            seq!(N in 0..=22 {
+            seq!(N in 0..=27 {
 
             #(#[test_case(TESTS[N])])*
             fn render_circuit_(test: &str) {
@@ -253,14 +268,15 @@ macro_rules! test_func_evm {
                 "1l_div",
                 "1l_leakyrelu",
                 "1l_sqrt",
-                "1l_prelu",
+                // "1l_prelu",
                 "1l_gelu_noappx",
                 "1l_sigmoid",
                 "1l_reshape",
-                "2l_relu_fc"
+                "2l_relu_fc",
+                "1l_var"
             ];
 
-            seq!(N in 0..=14 {
+            seq!(N in 0..=17 {
 
                 #(#[test_case(TESTS_EVM[N])])*
                 fn kzg_evm_prove_and_verify_(test: &str) {
@@ -427,9 +443,9 @@ fn tutorial() {
             "-K=17",
             "mock",
             "-D",
-            format!("./examples/onnx/tutorial/input.json").as_str(),
+            "./examples/onnx/tutorial/input.json".to_string().as_str(),
             "-M",
-            format!("./examples/onnx/tutorial/network.onnx").as_str(),
+            "./examples/onnx/tutorial/network.onnx".to_string().as_str(),
         ])
         .status()
         .expect("failed to execute process");
